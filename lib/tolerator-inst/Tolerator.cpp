@@ -68,6 +68,16 @@ bool Tolerator::runOnModule(Module &m) {
       /* isVarArg */ false);
   auto local = m.getOrInsertFunction("ToLeRaToR_local", localHelperTy);
 
+  /* store */
+  std::vector<Type *> store_args;
+  store_args.push_back(Type::getInt64Ty(context));
+  store_args.push_back(Type::getInt32Ty(context));
+  store_args.push_back(Type::getInt64Ty(context));
+  auto *storeHelperTy = FunctionType::get(
+      /* return type */ voidTy,
+      /* args vector */ store_args,
+      /* isVarArg */ false);
+  auto store = m.getOrInsertFunction("ToLeRaToR_store", storeHelperTy);
   IRBuilder<> IRB(context);
 
   for (auto &f : m) {
@@ -112,6 +122,26 @@ bool Tolerator::runOnModule(Module &m) {
             Len = IRB.CreateMul(Len, AI->getArraySize());
           IRB.CreateCall(local,
                          {IRB.CreatePointerCast(AI, IRB.getIntPtrTy(DL)), Len});
+        } else if (StoreInst *SI = dyn_cast<StoreInst>(&i)) {
+          /* StoreInst: store var *ptr */
+          IRB.SetInsertPoint(SI);
+          const DataLayout &DL = f.getParent()->getDataLayout();
+          Value *Val = SI->getValueOperand();
+          Value *Addr = SI->getPointerOperand();
+          uint64_t StoreSize = DL.getTypeStoreSize(Val->getType());
+          Value *Size = ConstantInt::get(IRB.getInt64Ty(), StoreSize);
+          /* TODO a better way to type judge ? */
+          if (Val->getType() == Type::getInt32Ty(context) ||
+              Val->getType() == Type::getInt8Ty(context) ||
+              Val->getType() == Type::getInt64Ty(context)) {
+            IRB.CreateCall(
+                store, {IRB.CreatePointerCast(Addr, IRB.getIntPtrTy(DL)),
+                        IRB.CreateIntCast(Val, IRB.getInt32Ty(), false), Size});
+          } else {
+            IRB.CreateCall(
+                store, {IRB.CreatePointerCast(Addr, IRB.getIntPtrTy(DL)),
+                        IRB.CreatePointerCast(Val, IRB.getInt32Ty()), Size});
+          }
         }
       }
     }

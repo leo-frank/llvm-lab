@@ -1,7 +1,11 @@
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <vector>
+
+std::vector<int64_t> mallocAddrs;
 
 extern "C" {
 
@@ -31,9 +35,18 @@ void TOLERATE(div)(int32_t op) {
 
 void TOLERATE(malloc)(int64_t *ptr, int64_t size) {
   printf("malloc at %p size %ld\n", ptr, size);
+  mallocAddrs.push_back((int64_t)ptr);
 }
 
-void TOLERATE(free)(int64_t *ptr) { printf("free at %p\n", ptr); }
+void TOLERATE(free)(int64_t *ptr) {
+  auto iter = std::find(begin(mallocAddrs), end(mallocAddrs), (int64_t)ptr);
+  if (iter == std::end(mallocAddrs)) {
+    fprintf(stderr, "FOUND: Invalid free of memory\n");
+    exit(-1);
+  } else {
+    mallocAddrs.erase(iter);
+  }
+}
 
 void TOLERATE(local)(int64_t *ptr, int64_t size) {
   printf("local var alloc at %p, size %ld bytes\n", ptr, size);

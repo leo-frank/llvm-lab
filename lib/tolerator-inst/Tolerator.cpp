@@ -165,6 +165,7 @@ bool Tolerator::runOnModule(Module &m) {
         }
       }
     }
+    // TODO clear local variable
   }
   return true;
 }

@@ -36,4 +36,8 @@ void TOLERATE(malloc)(int64_t* ptr, int64_t size) {
 }
 
 void TOLERATE(free)(int64_t* ptr) { printf("free at %p\n", ptr); }
+
+void TOLERATE(local)(int64_t* ptr, int64_t size) {
+  printf("local var alloc at %p, size %ld bytes\n", ptr, size);
+}
 }

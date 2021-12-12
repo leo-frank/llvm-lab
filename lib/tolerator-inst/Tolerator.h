@@ -17,7 +17,7 @@ struct Tolerator : public llvm::ModulePass {
 
   Tolerator(AnalysisType analysisType) : llvm::ModulePass(ID) {}
 
-  bool runOnModule(llvm::Module& m) override;
+  bool runOnModule(llvm::Module &m) override;
 };
 
-}  // namespace tolerator
+} // namespace tolerator

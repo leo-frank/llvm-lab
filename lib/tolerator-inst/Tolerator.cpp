@@ -78,6 +78,17 @@ bool Tolerator::runOnModule(Module &m) {
       /* args vector */ store_args,
       /* isVarArg */ false);
   auto store = m.getOrInsertFunction("ToLeRaToR_store", storeHelperTy);
+
+  /* load */
+  std::vector<Type *> load_args;
+  load_args.push_back(Type::getInt64Ty(context));
+  load_args.push_back(Type::getInt64Ty(context));
+  auto *loadHelperTy = FunctionType::get(
+      /* return type */ voidTy,
+      /* args vector */ load_args,
+      /* isVarArg */ false);
+  auto load = m.getOrInsertFunction("ToLeRaToR_load", loadHelperTy);
+
   IRBuilder<> IRB(context);
 
   for (auto &f : m) {
@@ -142,6 +153,15 @@ bool Tolerator::runOnModule(Module &m) {
                 store, {IRB.CreatePointerCast(Addr, IRB.getIntPtrTy(DL)),
                         IRB.CreatePointerCast(Val, IRB.getInt32Ty()), Size});
           }
+        } else if (LoadInst *LI = dyn_cast<LoadInst>(&i)) {
+          /* LoadInst: load var *ptr */
+          IRB.SetInsertPoint(LI);
+          Value *Addr = LI->getPointerOperand();
+          const DataLayout &DL = f.getParent()->getDataLayout();
+          uint64_t LoadSize = DL.getTypeStoreSize(LI->getType());
+          Value *Size = ConstantInt::get(IRB.getInt64Ty(), LoadSize);
+          IRB.CreateCall(
+              load, {IRB.CreatePointerCast(Addr, IRB.getIntPtrTy(DL)), Size});
         }
       }
     }

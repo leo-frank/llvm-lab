@@ -42,4 +42,8 @@ void TOLERATE(local)(int64_t *ptr, int64_t size) {
 void TOLERATE(store)(int64_t *ptr, int64_t val, int64_t size) {
   printf("try to write %p with value %ld, size %ld \n", ptr, val, size);
 }
+
+void TOLERATE(load)(int64_t *ptr, int64_t size) {
+  printf("load from %p, size %ld bytes\n", ptr, size);
+}
 }

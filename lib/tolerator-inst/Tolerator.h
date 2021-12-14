@@ -15,6 +15,8 @@ enum class AnalysisType { LOGGING, IGNORING, DEFAULTING, BYPASSING };
 struct Tolerator : public llvm::ModulePass {
   static char ID;
 
+  llvm::DenseMap<llvm::Function *, int64_t> ids;
+
   Tolerator(AnalysisType analysisType) : llvm::ModulePass(ID) {}
 
   bool runOnModule(llvm::Module &m) override;

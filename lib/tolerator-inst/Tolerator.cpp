@@ -19,6 +19,23 @@ char Tolerator::ID = 0;
 
 }
 
+// Returns a map (Function* -> uint64_t).
+// This is used for local valid address of nesting functions.
+static DenseMap<Function *, int64_t>
+computeFunctionIDs(llvm::ArrayRef<Function *> functions) {
+  DenseMap<Function *, int64_t> idMap;
+
+  size_t nextID = 0;
+  for (auto f : functions) {
+    if (!f->isDeclaration()) {
+      idMap[f] = nextID;
+      ++nextID;
+    }
+  }
+
+  return idMap;
+}
+
 bool Tolerator::runOnModule(Module &m) {
   auto &context = m.getContext();
 
@@ -42,7 +59,7 @@ bool Tolerator::runOnModule(Module &m) {
 
   /* malloc */
   std::vector<Type *> alloc_args;
-  // TODO will there always be a int8* type? int64* also possible
+  // TODO: will there always be a int8* type? int64* also possible
   alloc_args.push_back(Type::getInt8PtrTy(context)); // start address
   alloc_args.push_back(Type::getInt64Ty(context));   // malloc size
   auto *allocHelperTy = FunctionType::get(
@@ -62,6 +79,7 @@ bool Tolerator::runOnModule(Module &m) {
   std::vector<Type *> local_args;
   local_args.push_back(Type::getInt64Ty(context));
   local_args.push_back(Type::getInt64Ty(context));
+  local_args.push_back(Type::getInt64Ty(context));
   auto *localHelperTy = FunctionType::get(
       /* return type */ voidTy,
       /* args vector */ local_args,
@@ -70,6 +88,7 @@ bool Tolerator::runOnModule(Module &m) {
 
   /* store */
   std::vector<Type *> store_args;
+  store_args.push_back(Type::getInt64Ty(context));
   store_args.push_back(Type::getInt64Ty(context));
   store_args.push_back(Type::getInt32Ty(context));
   store_args.push_back(Type::getInt64Ty(context));
@@ -83,15 +102,50 @@ bool Tolerator::runOnModule(Module &m) {
   std::vector<Type *> load_args;
   load_args.push_back(Type::getInt64Ty(context));
   load_args.push_back(Type::getInt64Ty(context));
+  load_args.push_back(Type::getInt64Ty(context));
   auto *loadHelperTy = FunctionType::get(
       /* return type */ voidTy,
       /* args vector */ load_args,
       /* isVarArg */ false);
   auto load = m.getOrInsertFunction("ToLeRaToR_load", loadHelperTy);
 
+  /* clear */
+  std::vector<Type *> clear_args;
+  clear_args.push_back(Type::getInt64Ty(context));
+  auto *clearHelperTy = FunctionType::get(
+      /* return type */ voidTy,
+      /* args vector */ clear_args,
+      /* isVarArg */ false);
+  auto clear = m.getOrInsertFunction("ToLeRaToR_clear", clearHelperTy);
+
+  std::vector<Function *> toCount;
+  for (auto &f : m) {
+    toCount.push_back(&f);
+  }
+  ids = computeFunctionIDs(toCount);
+
+  auto &DL = m.getDataLayout();
   IRBuilder<> IRB(context);
 
+  for (auto G_iter = m.global_begin(); G_iter != m.global_end(); G_iter++) {
+    GlobalVariable *G = &*G_iter;
+    Type *Ty = G->getValueType();
+    // only instrument global variables who defines
+    // in within the same linkage unit
+    if (!Ty->isSized() || !G->hasInitializer() || !G->isDSOLocal())
+      continue;
+    const uint64_t SizeInBytes = DL.getTypeAllocSize(Ty);
+    auto GlobalAddr = IRB.CreatePointerCast(G, IRB.getIntPtrTy(DL));
+    auto FirstFunction = &*(m.begin());
+    auto FirstBlock = &*(FirstFunction->begin());
+    IRB.SetInsertPoint(&*FirstBlock->getFirstInsertionPt());
+    IRB.CreateCall(local, {IRB.getInt64(-1), GlobalAddr,
+                           ConstantInt::get(IRB.getInt64Ty(), SizeInBytes)});
+  }
+
   for (auto &f : m) {
+    if (f.isDeclaration())
+      continue;
     for (auto &bb : f) {
       for (auto &i : bb) {
         if (BinaryOperator *BO = dyn_cast<BinaryOperator>(&i)) {
@@ -126,46 +180,48 @@ bool Tolerator::runOnModule(Module &m) {
         } else if (AllocaInst *AI = dyn_cast<AllocaInst>(&i)) {
           /* local stack allocate */
           IRB.SetInsertPoint(AI->getNextNode());
-          const DataLayout &DL = f.getParent()->getDataLayout();
           uint64_t TypeSize = DL.getTypeAllocSize(AI->getAllocatedType());
           Value *Len = ConstantInt::get(IRB.getInt64Ty(), TypeSize);
           if (AI->isArrayAllocation())
             Len = IRB.CreateMul(Len, AI->getArraySize());
           IRB.CreateCall(local,
-                         {IRB.CreatePointerCast(AI, IRB.getIntPtrTy(DL)), Len});
+                         {IRB.getInt64(ids[&f]),
+                          IRB.CreatePointerCast(AI, IRB.getIntPtrTy(DL)), Len});
         } else if (StoreInst *SI = dyn_cast<StoreInst>(&i)) {
           /* StoreInst: store var *ptr */
           IRB.SetInsertPoint(SI);
-          const DataLayout &DL = f.getParent()->getDataLayout();
           Value *Val = SI->getValueOperand();
           Value *Addr = SI->getPointerOperand();
           uint64_t StoreSize = DL.getTypeStoreSize(Val->getType());
           Value *Size = ConstantInt::get(IRB.getInt64Ty(), StoreSize);
-          /* TODO a better way to type judge ? */
+          /* TODO: a better way to type judge ? */
           if (Val->getType() == Type::getInt32Ty(context) ||
               Val->getType() == Type::getInt8Ty(context) ||
               Val->getType() == Type::getInt64Ty(context)) {
             IRB.CreateCall(
-                store, {IRB.CreatePointerCast(Addr, IRB.getIntPtrTy(DL)),
+                store, {IRB.getInt64(ids[&f]),
+                        IRB.CreatePointerCast(Addr, IRB.getIntPtrTy(DL)),
                         IRB.CreateIntCast(Val, IRB.getInt32Ty(), false), Size});
           } else {
             IRB.CreateCall(
-                store, {IRB.CreatePointerCast(Addr, IRB.getIntPtrTy(DL)),
+                store, {IRB.getInt64(ids[&f]),
+                        IRB.CreatePointerCast(Addr, IRB.getIntPtrTy(DL)),
                         IRB.CreatePointerCast(Val, IRB.getInt32Ty()), Size});
           }
         } else if (LoadInst *LI = dyn_cast<LoadInst>(&i)) {
           /* LoadInst: load var *ptr */
           IRB.SetInsertPoint(LI);
           Value *Addr = LI->getPointerOperand();
-          const DataLayout &DL = f.getParent()->getDataLayout();
           uint64_t LoadSize = DL.getTypeStoreSize(LI->getType());
           Value *Size = ConstantInt::get(IRB.getInt64Ty(), LoadSize);
           IRB.CreateCall(
-              load, {IRB.CreatePointerCast(Addr, IRB.getIntPtrTy(DL)), Size});
+              load, {IRB.getInt64(ids[&f]),
+                     IRB.CreatePointerCast(Addr, IRB.getIntPtrTy(DL)), Size});
         }
+        IRB.SetInsertPoint(&i);
       }
     }
-    // TODO clear local variable
+    IRB.CreateCall(clear, {IRB.getInt64(ids[&f])});
   }
   return true;
 }

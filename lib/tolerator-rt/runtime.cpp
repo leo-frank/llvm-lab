@@ -6,6 +6,12 @@
 #include <vector>
 
 std::vector<int64_t> mallocAddrs;
+struct validLocalPair {
+  int64_t id; // function ID
+  int64_t ptr;
+  int64_t size;
+};
+std::vector<validLocalPair> validLocals;
 
 extern "C" {
 
@@ -34,7 +40,6 @@ void TOLERATE(div)(int32_t op) {
 }
 
 void TOLERATE(malloc)(int64_t *ptr, int64_t size) {
-  printf("malloc at %p size %ld\n", ptr, size);
   mallocAddrs.push_back((int64_t)ptr);
 }
 
@@ -48,15 +53,39 @@ void TOLERATE(free)(int64_t *ptr) {
   }
 }
 
-void TOLERATE(local)(int64_t *ptr, int64_t size) {
-  printf("local var alloc at %p, size %ld bytes\n", ptr, size);
+void TOLERATE(local)(int64_t id, int64_t *ptr, int64_t size) {
+  validLocals.push_back(validLocalPair{id, (int64_t)ptr, size});
 }
 
-void TOLERATE(store)(int64_t *ptr, int64_t val, int64_t size) {
-  printf("try to write %p with value %ld, size %ld \n", ptr, val, size);
+void TOLERATE(store)(int64_t id, int64_t *ptr, int64_t val, int64_t size) {
+  for (auto i = validLocals.begin(); i < validLocals.end(); i++) {
+    if (i->id == id || i->id == -1) {
+      if (((int64_t)ptr < i->ptr + i->size) && ((int64_t)ptr >= i->ptr)) {
+        return;
+      }
+    }
+  }
+  fprintf(stderr, "FOUND: Invalid write of memory\n");
+  exit(-1);
 }
 
-void TOLERATE(load)(int64_t *ptr, int64_t size) {
-  printf("load from %p, size %ld bytes\n", ptr, size);
+void TOLERATE(load)(int64_t id, int64_t *ptr, int64_t size) {
+  for (auto i = validLocals.begin(); i < validLocals.end(); i++) {
+    if (i->id == id || i->id == -1) {
+      if (((int64_t)ptr < i->ptr + i->size) && ((int64_t)ptr >= i->ptr)) {
+        return;
+      }
+    }
+  }
+  fprintf(stderr, "FOUND: Invalid read of memory\n");
+  exit(-1);
+}
+
+void TOLERATE(clear)(int64_t id) {
+  for (auto i = validLocals.begin(); i < validLocals.end(); i++) {
+    if (i->id == id) {
+      validLocals.erase(i);
+    }
+  }
 }
 }

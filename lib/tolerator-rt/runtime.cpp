@@ -1,8 +1,8 @@
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
-<<<<<<< HEAD
 #include <vector>
 
 std::vector<int64_t> mallocAddrs;
@@ -12,8 +12,6 @@ struct validLocalPair {
   int64_t size;
 };
 std::vector<validLocalPair> validLocals;
-=======
->>>>>>> parent of c4f54fd... finish Task1 - Invalid Free Detect
 
 extern "C" {
 
@@ -42,14 +40,18 @@ void TOLERATE(div)(int32_t op) {
 }
 
 void TOLERATE(malloc)(int64_t *ptr, int64_t size) {
-<<<<<<< HEAD
   mallocAddrs.push_back((int64_t)ptr);
-=======
-  printf("malloc at %p size %ld\n", ptr, size);
->>>>>>> parent of c4f54fd... finish Task1 - Invalid Free Detect
 }
 
-void TOLERATE(free)(int64_t *ptr) { printf("free at %p\n", ptr); }
+void TOLERATE(free)(int64_t *ptr) {
+  auto iter = std::find(begin(mallocAddrs), end(mallocAddrs), (int64_t)ptr);
+  if (iter == std::end(mallocAddrs)) {
+    fprintf(stderr, "FOUND: Invalid free of memory\n");
+    exit(-1);
+  } else {
+    mallocAddrs.erase(iter);
+  }
+}
 
 void TOLERATE(local)(int64_t id, int64_t *ptr, int64_t size) {
   validLocals.push_back(validLocalPair{id, (int64_t)ptr, size});

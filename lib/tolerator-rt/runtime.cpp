@@ -65,7 +65,7 @@ void TOLERATE(store)(int64_t id, int64_t *ptr, int64_t val, int64_t size) {
       }
     }
   }
-  fprintf(stderr, "FOUND: Invalid write of memory\n");
+  fprintf(stderr, "FOUND: Invalid write to memory\n");
   exit(-1);
 }
 
@@ -77,7 +77,7 @@ void TOLERATE(load)(int64_t id, int64_t *ptr, int64_t size) {
       }
     }
   }
-  fprintf(stderr, "FOUND: Invalid read of memory\n");
+  fprintf(stderr, "FOUND: Invalid read from memory\n");
   exit(-1);
 }
 

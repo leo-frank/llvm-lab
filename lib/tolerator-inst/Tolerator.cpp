@@ -18,7 +18,7 @@ namespace tolerator {
 char Tolerator::ID = 0;
 
 }
-
+enum STATE { INVALID, VALID };
 // Returns a map (Function* -> uint64_t).
 // This is used for local valid address of nesting functions.
 static DenseMap<Function *, int64_t>
@@ -42,6 +42,7 @@ bool Tolerator::runOnModule(Module &m) {
   // This analysis just prints a message when the program starts or exits.
   // You should modify this code as you see fit. 如你所见。
   auto *voidTy = Type::getVoidTy(context);
+  auto *int1Ty = Type::getInt1Ty(context);
 
   auto helloworld = m.getOrInsertFunction("ToLeRaToR_helloworld", voidTy);
   appendToGlobalCtors(m, llvm::cast<Function>(helloworld.getCallee()), 0);
@@ -70,7 +71,7 @@ bool Tolerator::runOnModule(Module &m) {
 
   /* free */
   auto *unallocHelperTy = FunctionType::get(
-      /* return type */ voidTy,
+      /* return type */ int1Ty,
       /* args vector */ Type::getInt8PtrTy(context),
       /* isVarArg */ false);
   auto unalloc = m.getOrInsertFunction("ToLeRaToR_free", unallocHelperTy);
@@ -93,7 +94,7 @@ bool Tolerator::runOnModule(Module &m) {
   store_args.push_back(Type::getInt32Ty(context));
   store_args.push_back(Type::getInt64Ty(context));
   auto *storeHelperTy = FunctionType::get(
-      /* return type */ voidTy,
+      /* return type */ int1Ty,
       /* args vector */ store_args,
       /* isVarArg */ false);
   auto store = m.getOrInsertFunction("ToLeRaToR_store", storeHelperTy);
@@ -118,6 +119,11 @@ bool Tolerator::runOnModule(Module &m) {
       /* isVarArg */ false);
   auto clear = m.getOrInsertFunction("ToLeRaToR_clear", clearHelperTy);
 
+  /* setMode */
+  auto setMode = m.getOrInsertFunction(
+      "ToLeRaToR_setMode",
+      FunctionType::get(voidTy, Type::getInt8Ty(context), false));
+
   std::vector<Function *> toCount;
   for (auto &f : m) {
     toCount.push_back(&f);
@@ -126,6 +132,14 @@ bool Tolerator::runOnModule(Module &m) {
 
   auto &DL = m.getDataLayout();
   IRBuilder<> IRB(context);
+
+  /* FIXME: Bug Here! Though it works fine for current testcase related to
+   * globalVariable,but this implement may be incorrect, since FirstFunction may
+   * not equal to entry Function. */
+  auto FirstFunction = &*(m.begin());
+  auto FirstBlock = &*(FirstFunction->begin());
+  auto FirstInsertPoint = &*FirstBlock->getFirstInsertionPt();
+  IRB.SetInsertPoint(FirstInsertPoint);
 
   for (auto G_iter = m.global_begin(); G_iter != m.global_end(); G_iter++) {
     GlobalVariable *G = &*G_iter;
@@ -136,16 +150,24 @@ bool Tolerator::runOnModule(Module &m) {
       continue;
     const uint64_t SizeInBytes = DL.getTypeAllocSize(Ty);
     auto GlobalAddr = IRB.CreatePointerCast(G, IRB.getIntPtrTy(DL));
-    auto FirstFunction = &*(m.begin());
-    auto FirstBlock = &*(FirstFunction->begin());
-    IRB.SetInsertPoint(&*FirstBlock->getFirstInsertionPt());
     IRB.CreateCall(local, {IRB.getInt64(-1), GlobalAddr,
                            ConstantInt::get(IRB.getInt64Ty(), SizeInBytes)});
   }
 
   for (auto &f : m) {
+
+    /* Must have defines in current Module, we don't care functions that only
+     * have declaration in this unit, but defines otherwhere. */
     if (f.isDeclaration())
       continue;
+
+    /* TODO: find out a better method for insert setMode at the beginning of
+     * every function. This implement seems really stupid, though it works. */
+    auto CurFirstBlock = &*(f.begin());
+    auto CurFirstInsertPoint = &*CurFirstBlock->getFirstInsertionPt();
+    IRB.SetInsertPoint(CurFirstInsertPoint);
+    IRB.CreateCall(setMode, {ConstantInt::get(IRB.getInt8Ty(), AT)});
+
     for (auto &bb : f) {
       for (auto &i : bb) {
         if (BinaryOperator *BO = dyn_cast<BinaryOperator>(&i)) {

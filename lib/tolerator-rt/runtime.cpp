@@ -5,7 +5,12 @@
 #include <cstdlib>
 #include <vector>
 
-std::vector<int64_t> mallocAddrs;
+struct validGlobalPair {
+  int64_t ptr;
+  int64_t size;
+};
+std::vector<validGlobalPair> mallocAddrs;
+
 struct validLocalPair {
   int64_t id; // function ID
   int64_t ptr;
@@ -52,44 +57,63 @@ void TOLERATE(div)(int32_t op) {
 }
 
 void TOLERATE(malloc)(int64_t *ptr, int64_t size) {
-  mallocAddrs.push_back((int64_t)ptr);
+  mallocAddrs.push_back(validGlobalPair{(int64_t)ptr, size});
 }
 
 int TOLERATE(free)(int64_t *ptr) {
-  auto iter = std::find(begin(mallocAddrs), end(mallocAddrs), (int64_t)ptr);
-  if (iter == std::end(mallocAddrs)) {
-    switch (Mode) {
-    case LOGGING: {
-      fprintf(stderr, "FOUND: Invalid free of memory\n");
-      exit(-1);
+  for (auto i = mallocAddrs.begin(); i < mallocAddrs.end(); i++) {
+    if (i->ptr == (int64_t)ptr) {
+      mallocAddrs.erase(i);
+      return VALID;
     }
-    case IGNORING: {
-      fprintf(stderr, "FOUND: Invalid free of memory\n");
-      return INVALID;
-    }
-    default: {
-      fprintf(stderr, "Not implemented\n");
-      exit(-1);
-    }
-    }
-  } else {
-    mallocAddrs.erase(iter);
-    return VALID;
+  }
+  switch (Mode) {
+  case LOGGING: {
+    fprintf(stderr, "FOUND: Invalid free of memory\n");
+    exit(-1);
+  }
+  case IGNORING: {
+    fprintf(stderr, "FOUND: Invalid free of memory\n");
+    return INVALID;
+  }
+  default: {
+    fprintf(stderr, "Not implemented\n");
+    exit(-1);
+  }
   }
 }
 
 void TOLERATE(local)(int64_t id, int64_t *ptr, int64_t size) {
   validLocals.push_back(validLocalPair{id, (int64_t)ptr, size});
 }
-
-int TOLERATE(store)(int64_t id, int64_t *ptr, int64_t val, int64_t size) {
-  /* FIXME: Bug here. forget GLOBAL STORE. */
+/* Check two points:
+ * firstly, there exist three type memory regions: GLOBAL, LOCAL and HEAP.
+ * secondly, not only the ptr itself need to be in the valid memory regions, but
+ * also the (ptr+size), as test/c/read-malloc-overlap.c tell us. so we have to
+ * ensure (lower_bound <= ptr) && (ptr + size <= upper_bound)
+ */
+int __LOAD_OR_STORE_VALID(int64_t *ptr, int64_t size, int id) {
+  // GLOBAL(id = -1) && LOCAL
   for (auto i = validLocals.begin(); i < validLocals.end(); i++) {
     if (i->id == id || i->id == -1) {
-      if (((int64_t)ptr < i->ptr + i->size) && ((int64_t)ptr >= i->ptr)) {
-        return VALID;
+      if (((int64_t)ptr + size <= i->ptr + i->size) &&
+          ((int64_t)ptr >= i->ptr)) {
+        return 1;
       }
     }
+  }
+  // HEAP
+  for (auto i = mallocAddrs.begin(); i < mallocAddrs.end(); i++) {
+    if (((int64_t)ptr + size <= i->ptr + i->size) && ((int64_t)ptr >= i->ptr)) {
+      return 1;
+    }
+  }
+  return 0;
+}
+
+int TOLERATE(store)(int64_t id, int64_t *ptr, int64_t val, int64_t size) {
+  if (__LOAD_OR_STORE_VALID(ptr, size, id)) {
+    return VALID;
   }
   switch (Mode) {
   case LOGGING: {
@@ -108,14 +132,9 @@ int TOLERATE(store)(int64_t id, int64_t *ptr, int64_t val, int64_t size) {
 }
 
 void TOLERATE(load)(int64_t id, int64_t *ptr, int64_t size) {
-  for (auto i = validLocals.begin(); i < validLocals.end(); i++) {
-    if (i->id == id || i->id == -1) {
-      if (((int64_t)ptr < i->ptr + i->size) && ((int64_t)ptr >= i->ptr)) {
-        return;
-      }
-    }
+  if (__LOAD_OR_STORE_VALID(ptr, size, id)) {
+    return;
   }
-
   switch (Mode) {
   case LOGGING: {
     fprintf(stderr, "FOUND: Invalid read from memory\n");

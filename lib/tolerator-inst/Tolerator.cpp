@@ -225,6 +225,9 @@ bool Tolerator::runOnModule(Module &m) {
          * is a error, we want the div instruction itself be value 0. I am
          * trying to solve this problem with the help of "PHI" IR, which is
          * really useful.
+         * 3. BYPASSING mode
+         * The lib should only print the error msg. And we need to add 'ret' in
+         * block which holds ElseTerm.
          */
         auto BONext = BO->getNextNode();
         Value *Cond = dyn_cast<Value>(CallDiv);
@@ -246,8 +249,18 @@ bool Tolerator::runOnModule(Module &m) {
                           ElseTerm->getParent());
           break;
         }
-        default:
+        case BYPASSING: {
+          BO->moveBefore(ThenTerm);
+          IRB.SetInsertPoint(ElseTerm);
+          if (f->getReturnType() == voidTy)
+            IRB.CreateRetVoid();
+          else {
+            IRB.CreateRet(Constant::getNullValue(f->getReturnType()));
+          }
+          /* Only one terminator allowed in a basicblock */
+          ElseTerm->eraseFromParent();
           break;
+        }
         }
       }
     } else if (CallBase *CB = dyn_cast<CallBase>(i)) {
@@ -347,6 +360,34 @@ bool Tolerator::runOnModule(Module &m) {
                     IRB.CreatePointerCast(Addr, IRB.getIntPtrTy(DL)),
                     IRB.CreatePointerCast(Val, IRB.getInt32Ty()), Size});
       }
+      Value *Cond = dyn_cast<Value>(CallStore);
+      Instruction *ThenTerm, *ElseTerm;
+      SplitBlockAndInsertIfThenElse(Cond, SI->getNextNode(), &ThenTerm,
+                                    &ElseTerm, nullptr);
+      /* Until Now, ThenTerm & ElseTerm become branch instruction. They all
+       * branch to SI's next instruction. */
+      switch (AT) {
+      case LOGGING: {
+        break;
+      }
+      case IGNORING:
+      case DEFAULTING: {
+        SI->moveBefore(ThenTerm);
+        break;
+      }
+      case BYPASSING: {
+        SI->moveBefore(ThenTerm);
+        IRB.SetInsertPoint(ElseTerm);
+        if (f->getReturnType() == voidTy)
+          IRB.CreateRetVoid();
+        else {
+          IRB.CreateRet(Constant::getNullValue(f->getReturnType()));
+        }
+        /* Only one terminator allowed in a basicblock */
+        ElseTerm->eraseFromParent();
+        break;
+      }
+      }
     } else if (LoadInst *LI = dyn_cast<LoadInst>(i)) {
       /* LoadInst: load var *ptr */
       IRB.SetInsertPoint(LI);
@@ -363,6 +404,9 @@ bool Tolerator::runOnModule(Module &m) {
        * 2. DEFAULTING mode
        * If there is an error, provide it with value 0, same as DIV, by the
        * means of "PHI" IR.
+       * 3. BYPASSING mode
+       * The lib should only print the error msg. And we need to add 'ret' in
+       * block which holds ElseTerm.
        */
       auto LINext = LI->getNextNode();
       Value *Cond = dyn_cast<Value>(CallLoad);
@@ -384,8 +428,18 @@ bool Tolerator::runOnModule(Module &m) {
                         ElseTerm->getParent());
         break;
       }
-      default:
+      case BYPASSING: {
+        LI->moveBefore(ThenTerm);
+        IRB.SetInsertPoint(ElseTerm);
+        if (f->getReturnType() == voidTy)
+          IRB.CreateRetVoid();
+        else {
+          IRB.CreateRet(Constant::getNullValue(f->getReturnType()));
+        }
+        /* Only one terminator allowed in a basicblock */
+        ElseTerm->eraseFromParent();
         break;
+      }
       }
     }
     IRB.SetInsertPoint(i);

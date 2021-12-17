@@ -48,13 +48,10 @@ int TOLERATE(div)(int32_t op) {
       fprintf(stderr, "FOUND: Division by zero\n");
       exit(-1);
     }
-    case DEFAULTING: {
+    case DEFAULTING:
+    case BYPASSING: {
       fprintf(stderr, "FOUND: Division by zero\n");
       return INVALID;
-    }
-    default: {
-      fprintf(stderr, "Not implemented\n");
-      exit(-1);
     }
     }
   }
@@ -80,15 +77,13 @@ int TOLERATE(free)(int64_t *ptr) {
     exit(-1);
   }
   case IGNORING:
-  case DEFAULTING: {
+  case DEFAULTING:
+  case BYPASSING: {
     fprintf(stderr, "FOUND: Invalid free of memory\n");
     return INVALID;
   }
-  default: {
-    fprintf(stderr, "Not implemented\n");
-    exit(-1);
   }
-  }
+  return INVALID;
 }
 
 void TOLERATE(local)(int64_t id, int64_t *ptr, int64_t size) {
@@ -129,15 +124,13 @@ int TOLERATE(store)(int64_t id, int64_t *ptr, int64_t val, int64_t size) {
     exit(-1);
   }
   case IGNORING:
-  case DEFAULTING: {
+  case DEFAULTING:
+  case BYPASSING: {
     fprintf(stderr, "FOUND: Invalid write to memory\n");
     return INVALID;
   }
-  default: {
-    fprintf(stderr, "Not implemented\n");
-    exit(-1);
   }
-  }
+  return INVALID;
 }
 
 int TOLERATE(load)(int64_t id, int64_t *ptr, int64_t size) {
@@ -150,15 +143,13 @@ int TOLERATE(load)(int64_t id, int64_t *ptr, int64_t size) {
     fprintf(stderr, "FOUND: Invalid read from memory\n");
     exit(-1);
   }
-  case DEFAULTING: {
+  case DEFAULTING:
+  case BYPASSING: {
     fprintf(stderr, "FOUND: Invalid read from memory\n");
     return INVALID;
   }
-  default: {
-    fprintf(stderr, "Not implemented\n");
-    exit(-1);
   }
-  }
+  return INVALID;
 }
 
 void TOLERATE(clear)(int64_t id) {

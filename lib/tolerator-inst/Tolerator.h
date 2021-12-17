@@ -10,7 +10,7 @@
 
 namespace tolerator {
 
-enum class AnalysisType { LOGGING, IGNORING, DEFAULTING, BYPASSING };
+enum AnalysisType { LOGGING, IGNORING, DEFAULTING, BYPASSING };
 
 struct Tolerator : public llvm::ModulePass {
   static char ID;
@@ -18,20 +18,7 @@ struct Tolerator : public llvm::ModulePass {
   llvm::DenseMap<llvm::Function *, int64_t> ids;
 
   Tolerator(AnalysisType analysisType) : llvm::ModulePass(ID) {
-    switch (analysisType) {
-    case AnalysisType::LOGGING:
-      AT = 1;
-      break;
-    case AnalysisType::IGNORING:
-      AT = 2;
-      break;
-    case AnalysisType::DEFAULTING:
-      AT = 3;
-      break;
-    case AnalysisType::BYPASSING:
-      AT = 4;
-      break;
-    };
+    AT = analysisType;
   }
 
   bool runOnModule(llvm::Module &m) override;

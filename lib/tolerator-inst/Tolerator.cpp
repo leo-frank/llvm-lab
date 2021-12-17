@@ -8,6 +8,7 @@
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Module.h"
+#include "llvm/Transforms/Utils/BasicBlockUtils.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
 
 using namespace llvm;
@@ -34,6 +35,21 @@ computeFunctionIDs(llvm::ArrayRef<Function *> functions) {
   }
 
   return idMap;
+}
+
+bool is_interesting(Instruction *inst) {
+  if (isa<AllocaInst>(inst) || isa<LoadInst>(inst) || isa<StoreInst>(inst) ||
+      isa<SDivOperator>(inst) || isa<UDivOperator>(inst))
+    return true;
+  if (isa<CallBase>(inst)) {
+    auto called =
+        dyn_cast<CallBase>(inst)->getCalledOperand()->stripPointerCasts();
+    if (called->getName().compare(StringRef("free")) == 0 ||
+        called->getName().compare(StringRef("malloc")) == 0) {
+      return true;
+    }
+  }
+  return false;
 }
 
 bool Tolerator::runOnModule(Module &m) {
@@ -154,96 +170,161 @@ bool Tolerator::runOnModule(Module &m) {
                            ConstantInt::get(IRB.getInt64Ty(), SizeInBytes)});
   }
 
+  std::vector<Instruction *> InstList;
+  std::vector<Instruction *> ExitPts;
+  std::vector<Instruction *> InsertPts;
   for (auto &f : m) {
 
     /* Must have defines in current Module, we don't care functions that only
      * have declaration in this unit, but defines otherwhere. */
-    if (f.isDeclaration())
-      continue;
 
-    /* TODO: find out a better method for insert setMode at the beginning of
-     * every function. This implement seems really stupid, though it works. */
-    auto CurFirstBlock = &*(f.begin());
-    auto CurFirstInsertPoint = &*CurFirstBlock->getFirstInsertionPt();
-    IRB.SetInsertPoint(CurFirstInsertPoint);
-    IRB.CreateCall(setMode, {ConstantInt::get(IRB.getInt8Ty(), AT)});
+    if (f.isDeclaration()) {
+      continue;
+    }
+
+    InsertPts.push_back(f.getEntryBlock().getFirstNonPHIOrDbg());
 
     for (auto &bb : f) {
-      for (auto &i : bb) {
-        if (BinaryOperator *BO = dyn_cast<BinaryOperator>(&i)) {
-          if (BO->getOpcode() == llvm::Instruction::BinaryOps::UDiv ||
-              BO->getOpcode() == llvm::Instruction::BinaryOps::SDiv ||
-              BO->getOpcode() == llvm::Instruction::BinaryOps::FDiv) {
-            Value *op2 = BO->getOperand(1);
-            IRB.SetInsertPoint(BO);
-            IRB.CreateCall(div, ArrayRef<Value *>(op2));
-          }
-        } else if (CallBase *CB = dyn_cast<CallBase>(&i)) {
-          /* Attention don't use: auto fn = CB->getCalledFunction(), which
-           * result in non-complete cast */
-          auto fn =
-              dyn_cast<Function>(CB->getCalledOperand()->stripPointerCasts());
-          if (fn) {
-            /* indirect call result fn to NULL, so make sure fn valid */
-            if (fn->getName() == "malloc") {
-              /* malloc find */
-              Value *args[2];
-              args[0] = dyn_cast<Value>(CB);         // start address
-              args[1] = CB->getOperand(0);           // malloc size
-              IRB.SetInsertPoint(CB->getNextNode()); // !getNextNode
-              IRB.CreateCall(alloc, args);
-            } else if (fn->getName() == "free") {
-              /* free find */
-              Value *op0 = CB->getOperand(0);
-              IRB.SetInsertPoint(CB);
-              IRB.CreateCall(unalloc, ArrayRef<Value *>(op0));
-            }
-          }
-        } else if (AllocaInst *AI = dyn_cast<AllocaInst>(&i)) {
-          /* local stack allocate */
-          IRB.SetInsertPoint(AI->getNextNode());
-          uint64_t TypeSize = DL.getTypeAllocSize(AI->getAllocatedType());
-          Value *Len = ConstantInt::get(IRB.getInt64Ty(), TypeSize);
-          if (AI->isArrayAllocation())
-            Len = IRB.CreateMul(Len, AI->getArraySize());
-          IRB.CreateCall(local,
-                         {IRB.getInt64(ids[&f]),
-                          IRB.CreatePointerCast(AI, IRB.getIntPtrTy(DL)), Len});
-        } else if (StoreInst *SI = dyn_cast<StoreInst>(&i)) {
-          /* StoreInst: store var *ptr */
-          IRB.SetInsertPoint(SI);
-          Value *Val = SI->getValueOperand();
-          Value *Addr = SI->getPointerOperand();
-          uint64_t StoreSize = DL.getTypeStoreSize(Val->getType());
-          Value *Size = ConstantInt::get(IRB.getInt64Ty(), StoreSize);
-          /* TODO: a better way to type judge ? */
-          if (Val->getType() == Type::getInt32Ty(context) ||
-              Val->getType() == Type::getInt8Ty(context) ||
-              Val->getType() == Type::getInt64Ty(context)) {
-            IRB.CreateCall(
-                store, {IRB.getInt64(ids[&f]),
-                        IRB.CreatePointerCast(Addr, IRB.getIntPtrTy(DL)),
-                        IRB.CreateIntCast(Val, IRB.getInt32Ty(), false), Size});
-          } else {
-            IRB.CreateCall(
-                store, {IRB.getInt64(ids[&f]),
-                        IRB.CreatePointerCast(Addr, IRB.getIntPtrTy(DL)),
-                        IRB.CreatePointerCast(Val, IRB.getInt32Ty()), Size});
-          }
-        } else if (LoadInst *LI = dyn_cast<LoadInst>(&i)) {
-          /* LoadInst: load var *ptr */
-          IRB.SetInsertPoint(LI);
-          Value *Addr = LI->getPointerOperand();
-          uint64_t LoadSize = DL.getTypeStoreSize(LI->getType());
-          Value *Size = ConstantInt::get(IRB.getInt64Ty(), LoadSize);
-          IRB.CreateCall(
-              load, {IRB.getInt64(ids[&f]),
-                     IRB.CreatePointerCast(Addr, IRB.getIntPtrTy(DL)), Size});
+      for (auto &inst : bb) {
+        if (is_interesting(&inst)) {
+          InstList.push_back(&inst);
         }
-        IRB.SetInsertPoint(&i);
+        if (isa<ReturnInst>(inst)) {
+          ExitPts.push_back(&inst);
+        }
       }
     }
-    IRB.CreateCall(clear, {IRB.getInt64(ids[&f])});
   }
+
+  for (auto *i : ExitPts) {
+    auto f = i->getParent()->getParent();
+    IRB.SetInsertPoint(i);
+    IRB.CreateCall(clear, {IRB.getInt64(ids[f])});
+  }
+
+  for (auto *i : InsertPts) {
+    IRB.SetInsertPoint(i);
+    IRB.CreateCall(setMode, {ConstantInt::get(IRB.getInt8Ty(), AT)});
+  }
+
+  for (auto &i : InstList) {
+    auto f = i->getParent()->getParent();
+    if (BinaryOperator *BO = dyn_cast<BinaryOperator>(i)) {
+      if (BO->getOpcode() == llvm::Instruction::BinaryOps::UDiv ||
+          BO->getOpcode() == llvm::Instruction::BinaryOps::SDiv ||
+          BO->getOpcode() == llvm::Instruction::BinaryOps::FDiv) {
+        Value *op2 = BO->getOperand(1);
+        IRB.SetInsertPoint(BO);
+        IRB.CreateCall(div, ArrayRef<Value *>(op2));
+      }
+    } else if (CallBase *CB = dyn_cast<CallBase>(i)) {
+      /* Attention don't use: auto fn = CB->getCalledFunction(), which
+       * result in non-complete cast */
+      auto fn = dyn_cast<Function>(CB->getCalledOperand()->stripPointerCasts());
+      if (fn) {
+        /* indirect call result fn to NULL, so make sure fn valid */
+        if (fn->getName() == "malloc") {
+          /* malloc find */
+          Value *args[2];
+          args[0] = dyn_cast<Value>(CB);         // start address
+          args[1] = CB->getOperand(0);           // malloc size
+          IRB.SetInsertPoint(CB->getNextNode()); // !getNextNode
+          IRB.CreateCall(alloc, args);
+        } else if (fn->getName() == "free") {
+          /* free find */
+          Value *op0 = CB->getOperand(0);
+          IRB.SetInsertPoint(CB);
+          auto CallFree = IRB.CreateCall(unalloc, ArrayRef<Value *>(op0));
+
+          /* We need to branch by the value of CALLFREE, aka Cond. Except
+           * LOGGING mode, we need to create if {A} else {B} statement and move
+           * free() to the {A}. Both {A} and {B} contains a branch.
+           *
+           * 1. IGNORING & DEFAULTING mode:
+           * Only valid free() will go to {A}, otherwise go to {B}.
+           *
+           * 2. BYPASSING mode:
+           * Same as IGNORING mode, except that we need add ret to {B} and
+           * erase br in {B}.
+           *
+           * 3. LOGGING mode:
+           * Do nothing, and runtime lib will handle whether or not exiting.
+           *  */
+
+          Value *Cond = dyn_cast<Value>(CallFree);
+          Instruction *ThenTerm, *ElseTerm;
+          SplitBlockAndInsertIfThenElse(Cond, CB->getNextNode(), &ThenTerm,
+                                        &ElseTerm, nullptr);
+          /* Until Now, ThenTerm & ElseTerm become branch instruction. They all
+           * branch to CB's next instruction. */
+          switch (AT) {
+          case LOGGING: {
+            break;
+          }
+          case IGNORING:
+          case DEFAULTING: {
+            CB->moveBefore(ThenTerm);
+            break;
+          }
+          case BYPASSING: {
+            CB->moveBefore(ThenTerm);
+            IRB.SetInsertPoint(ElseTerm);
+            if (f->getReturnType() == voidTy)
+              IRB.CreateRetVoid();
+            else {
+              IRB.CreateRet(Constant::getNullValue(f->getReturnType()));
+            }
+            /* Only one terminator allowed in a basicblock */
+            ElseTerm->eraseFromParent();
+          }
+          }
+          // TODO: break;
+        }
+      }
+    } else if (AllocaInst *AI = dyn_cast<AllocaInst>(i)) {
+      /* local stack allocate */
+      IRB.SetInsertPoint(AI->getNextNode());
+      uint64_t TypeSize = DL.getTypeAllocSize(AI->getAllocatedType());
+      Value *Len = ConstantInt::get(IRB.getInt64Ty(), TypeSize);
+      if (AI->isArrayAllocation())
+        Len = IRB.CreateMul(Len, AI->getArraySize());
+      IRB.CreateCall(local,
+                     {IRB.getInt64(ids[f]),
+                      IRB.CreatePointerCast(AI, IRB.getIntPtrTy(DL)), Len});
+    } else if (StoreInst *SI = dyn_cast<StoreInst>(i)) {
+      /* StoreInst: store var *ptr */
+      IRB.SetInsertPoint(SI);
+      Value *Val = SI->getValueOperand();
+      Value *Addr = SI->getPointerOperand();
+      uint64_t StoreSize = DL.getTypeStoreSize(Val->getType());
+      Value *Size = ConstantInt::get(IRB.getInt64Ty(), StoreSize);
+      /* TODO: a better way to type judge ? */
+      llvm::CallInst *CallStore;
+      if (Val->getType() == Type::getInt32Ty(context) ||
+          Val->getType() == Type::getInt8Ty(context) ||
+          Val->getType() == Type::getInt64Ty(context)) {
+        CallStore = IRB.CreateCall(
+            store, {IRB.getInt64(ids[f]),
+                    IRB.CreatePointerCast(Addr, IRB.getIntPtrTy(DL)),
+                    IRB.CreateIntCast(Val, IRB.getInt32Ty(), false), Size});
+      } else {
+        CallStore = IRB.CreateCall(
+            store, {IRB.getInt64(ids[f]),
+                    IRB.CreatePointerCast(Addr, IRB.getIntPtrTy(DL)),
+                    IRB.CreatePointerCast(Val, IRB.getInt32Ty()), Size});
+      }
+    } else if (LoadInst *LI = dyn_cast<LoadInst>(i)) {
+      /* LoadInst: load var *ptr */
+      IRB.SetInsertPoint(LI);
+      Value *Addr = LI->getPointerOperand();
+      uint64_t LoadSize = DL.getTypeStoreSize(LI->getType());
+      Value *Size = ConstantInt::get(IRB.getInt64Ty(), LoadSize);
+      IRB.CreateCall(load,
+                     {IRB.getInt64(ids[f]),
+                      IRB.CreatePointerCast(Addr, IRB.getIntPtrTy(DL)), Size});
+    }
+    IRB.SetInsertPoint(i);
+  }
+
   return true;
 }

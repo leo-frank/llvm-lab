@@ -18,7 +18,7 @@ struct validLocalPair {
 };
 std::vector<validLocalPair> validLocals;
 
-enum AnalysisType { LOGGING = 1, IGNORING, DEFAULTING, BYPASSING };
+enum AnalysisType { LOGGING, IGNORING, DEFAULTING, BYPASSING };
 enum STATE { INVALID, VALID };
 char Mode;
 
@@ -142,6 +142,7 @@ void TOLERATE(load)(int64_t id, int64_t *ptr, int64_t size) {
   }
   case IGNORING: {
     fprintf(stderr, "FOUND: Invalid read from memory\n");
+    break;
   }
   default: {
     fprintf(stderr, "Not implemented\n");

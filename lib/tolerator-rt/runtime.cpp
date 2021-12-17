@@ -40,7 +40,7 @@ void TOLERATE(goodbyeworld)() {
          "==============================\n");
 }
 
-void TOLERATE(div)(int32_t op) {
+int TOLERATE(div)(int32_t op) {
   if (op == 0) {
     switch (Mode) {
     case LOGGING:
@@ -48,12 +48,19 @@ void TOLERATE(div)(int32_t op) {
       fprintf(stderr, "FOUND: Division by zero\n");
       exit(-1);
     }
+    case DEFAULTING: {
+      fprintf(stderr, "FOUND: Division by zero\n");
+      return INVALID;
+    }
     default: {
       fprintf(stderr, "Not implemented\n");
       exit(-1);
     }
     }
   }
+  // Thanks to warning message provided by compiler!
+  // Or I must forget this return;
+  return VALID;
 }
 
 void TOLERATE(malloc)(int64_t *ptr, int64_t size) {
@@ -72,7 +79,8 @@ int TOLERATE(free)(int64_t *ptr) {
     fprintf(stderr, "FOUND: Invalid free of memory\n");
     exit(-1);
   }
-  case IGNORING: {
+  case IGNORING:
+  case DEFAULTING: {
     fprintf(stderr, "FOUND: Invalid free of memory\n");
     return INVALID;
   }
@@ -120,7 +128,8 @@ int TOLERATE(store)(int64_t id, int64_t *ptr, int64_t val, int64_t size) {
     fprintf(stderr, "FOUND: Invalid write to memory\n");
     exit(-1);
   }
-  case IGNORING: {
+  case IGNORING:
+  case DEFAULTING: {
     fprintf(stderr, "FOUND: Invalid write to memory\n");
     return INVALID;
   }
@@ -131,18 +140,19 @@ int TOLERATE(store)(int64_t id, int64_t *ptr, int64_t val, int64_t size) {
   }
 }
 
-void TOLERATE(load)(int64_t id, int64_t *ptr, int64_t size) {
+int TOLERATE(load)(int64_t id, int64_t *ptr, int64_t size) {
   if (__LOAD_OR_STORE_VALID(ptr, size, id)) {
-    return;
+    return VALID;
   }
   switch (Mode) {
-  case LOGGING: {
+  case LOGGING:
+  case IGNORING: {
     fprintf(stderr, "FOUND: Invalid read from memory\n");
     exit(-1);
   }
-  case IGNORING: {
+  case DEFAULTING: {
     fprintf(stderr, "FOUND: Invalid read from memory\n");
-    break;
+    return INVALID;
   }
   default: {
     fprintf(stderr, "Not implemented\n");

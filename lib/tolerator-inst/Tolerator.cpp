@@ -69,7 +69,7 @@ bool Tolerator::runOnModule(Module &m) {
   /* div */
   auto *int32Ty = Type::getInt32Ty(context);
   auto *divHelperTy = FunctionType::get(
-      /* return type */ voidTy,
+      /* return type */ int1Ty,
       /* args vector */ int32Ty,
       /* isVarArg */ false);
   auto div = m.getOrInsertFunction("ToLeRaToR_div", divHelperTy);
@@ -121,7 +121,7 @@ bool Tolerator::runOnModule(Module &m) {
   load_args.push_back(Type::getInt64Ty(context));
   load_args.push_back(Type::getInt64Ty(context));
   auto *loadHelperTy = FunctionType::get(
-      /* return type */ voidTy,
+      /* return type */ int1Ty,
       /* args vector */ load_args,
       /* isVarArg */ false);
   auto load = m.getOrInsertFunction("ToLeRaToR_load", loadHelperTy);
@@ -215,7 +215,40 @@ bool Tolerator::runOnModule(Module &m) {
           BO->getOpcode() == llvm::Instruction::BinaryOps::FDiv) {
         Value *op2 = BO->getOperand(1);
         IRB.SetInsertPoint(BO);
-        IRB.CreateCall(div, ArrayRef<Value *>(op2));
+        auto CallDiv = IRB.CreateCall(div, ArrayRef<Value *>(op2));
+
+        /* We want DIV's if-else behave like following:
+         * 1. LOGGING and IGNORING mode
+         * Let runtime lib decides whether or not exit. Nothing here.
+         * 2. DEFAULTING mode
+         * The lib should only print the error message, but never exit. If there
+         * is a error, we want the div instruction itself be value 0. I am
+         * trying to solve this problem with the help of "PHI" IR, which is
+         * really useful.
+         */
+        auto BONext = BO->getNextNode();
+        Value *Cond = dyn_cast<Value>(CallDiv);
+        Instruction *ThenTerm, *ElseTerm;
+        SplitBlockAndInsertIfThenElse(Cond, BONext, &ThenTerm, &ElseTerm,
+                                      nullptr);
+        switch (AT) {
+        case LOGGING:
+        case IGNORING:
+          break;
+        case DEFAULTING: {
+          BO->moveBefore(ThenTerm);
+          IRB.SetInsertPoint(BONext);
+          PHINode *PN = IRB.CreatePHI(BO->getType(), 2);
+          // replaceAllUsesWith must be in front of addIncoming.
+          BO->replaceAllUsesWith(PN);
+          PN->addIncoming(BO, BO->getParent());
+          PN->addIncoming(Constant::getNullValue(BO->getType()),
+                          ElseTerm->getParent());
+          break;
+        }
+        default:
+          break;
+        }
       }
     } else if (CallBase *CB = dyn_cast<CallBase>(i)) {
       /* Attention don't use: auto fn = CB->getCalledFunction(), which
@@ -276,6 +309,7 @@ bool Tolerator::runOnModule(Module &m) {
             }
             /* Only one terminator allowed in a basicblock */
             ElseTerm->eraseFromParent();
+            break;
           }
           }
           // TODO: break;
@@ -319,9 +353,40 @@ bool Tolerator::runOnModule(Module &m) {
       Value *Addr = LI->getPointerOperand();
       uint64_t LoadSize = DL.getTypeStoreSize(LI->getType());
       Value *Size = ConstantInt::get(IRB.getInt64Ty(), LoadSize);
-      IRB.CreateCall(load,
-                     {IRB.getInt64(ids[f]),
-                      IRB.CreatePointerCast(Addr, IRB.getIntPtrTy(DL)), Size});
+      auto CallLoad = IRB.CreateCall(
+          load, {IRB.getInt64(ids[f]),
+                 IRB.CreatePointerCast(Addr, IRB.getIntPtrTy(DL)), Size});
+
+      /* We want Load's if-else behave like following:
+       * 1. LOGGING & IGNORING Mode:
+       * Let runtime lib decides whether or not exit. Nothing here.
+       * 2. DEFAULTING mode
+       * If there is an error, provide it with value 0, same as DIV, by the
+       * means of "PHI" IR.
+       */
+      auto LINext = LI->getNextNode();
+      Value *Cond = dyn_cast<Value>(CallLoad);
+      Instruction *ThenTerm, *ElseTerm;
+      SplitBlockAndInsertIfThenElse(Cond, LINext, &ThenTerm, &ElseTerm,
+                                    nullptr);
+      switch (AT) {
+      case LOGGING:
+      case IGNORING:
+        break;
+      case DEFAULTING: {
+        LI->moveBefore(ThenTerm);
+        IRB.SetInsertPoint(LINext);
+        PHINode *PN = IRB.CreatePHI(LI->getType(), 2);
+        // replaceAllUsesWith must be in front of addIncoming.
+        LI->replaceAllUsesWith(PN);
+        PN->addIncoming(LI, LI->getParent());
+        PN->addIncoming(Constant::getNullValue(LI->getType()),
+                        ElseTerm->getParent());
+        break;
+      }
+      default:
+        break;
+      }
     }
     IRB.SetInsertPoint(i);
   }
